@@ -1,6 +1,5 @@
 using UnityEngine;
 using Cinemachine.Utility;
-using Sirenix.OdinInspector;
 
 namespace Cinemachine
 {
@@ -21,18 +20,18 @@ namespace Cinemachine
 
         /// Increase this value to soften the aggressiveness of the follow-zoom.
         /// Small numbers are more responsive, larger numbers give a more heavy slowly responding camera.
-        [PropertyRange(0, 20)]
+        [Range(0, 20)]
         [Tooltip(
             "Increase this value to soften the aggressiveness of the follow-zoom.  Small numbers are more responsive, larger numbers give a more heavy slowly responding camera.")]
         public float m_Damping = 1f;
 
         /// Will not generate an FOV smaller than this.
-        [PropertyRange(1, 179)]
+        [Range(1, 179)]
         [Tooltip("Lower limit for the FOV that this behaviour will generate.")]
         public float m_MinOrthgraphicSize = 6f;
 
         /// Will not generate an FOV larget than this.
-        [PropertyRange(1, 179)]
+        [Range(1, 179)]
         [Tooltip("Upper limit for the FOV that this behaviour will generate.")]
         public float m_MaxOrthographicSize = 8f;
 
