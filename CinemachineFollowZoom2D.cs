@@ -1,10 +1,12 @@
+using System;
 using UnityEngine;
 using Cinemachine.Utility;
+using UnityEditor;
 
 namespace Cinemachine
 {
     /// An add-on module for Cinemachine Virtual Camera that adjusts
-    /// the FOV of the lens to keep the target object at a constant size on the screen,
+    /// the OrthographicSize of the lens to keep the target object at a constant size on the screen,
     /// regardless of camera and target position.
     [AddComponentMenu("")] // Hide in menu
     [SaveDuringPlay]
@@ -12,87 +14,95 @@ namespace Cinemachine
     [DisallowMultipleComponent]
     public class CinemachineFollowZoom2D : CinemachineExtension
     {
-        /// The shot width to maintain, in world units, at target distance.
-        /// FOV will be adusted as far as possible to maintain this width at the
-        /// target distance from the camera
-        [Tooltip("The shot width to maintain, in world units, at target distance.")]
-        public float m_Width = 2f;
+        [Tooltip("The shot height to maintain, in world units, at target distance.")]
+        [SerializeField] AnimationCurve OrthographicSizeByDistance = AnimationCurve.Linear(0, -1, 2, 2);
 
-        /// Increase this value to soften the aggressiveness of the follow-zoom.
-        /// Small numbers are more responsive, larger numbers give a more heavy slowly responding camera.
-        [Range(0, 20)]
+        /// <summary>Increase this value to soften the aggressiveness of the follow-zoom.
+        /// Small numbers are more responsive, larger numbers give a more heavy slowly responding camera. </summary>
+        [Range(0f, 20f)]
         [Tooltip(
             "Increase this value to soften the aggressiveness of the follow-zoom.  Small numbers are more responsive, larger numbers give a more heavy slowly responding camera.")]
-        public float m_Damping = 1f;
+        [SerializeField] float m_Damping = 1;
 
-        /// Will not generate an FOV smaller than this.
-        [Range(1, 179)]
-        [Tooltip("Lower limit for the FOV that this behaviour will generate.")]
-        public float m_MinOrthgraphicSize = 6f;
+        [SerializeField] bool m_Gizmo = true;
 
-        /// Will not generate an FOV larget than this.
-        [Range(1, 179)]
-        [Tooltip("Upper limit for the FOV that this behaviour will generate.")]
-        public float m_MaxOrthographicSize = 8f;
-
-        void OnValidate()
+        [SerializeField] Gradient m_GizmoColor = new Gradient
         {
-            m_Width = Mathf.Max(0, m_Width);
-            m_MaxOrthographicSize = Mathf.Clamp(m_MaxOrthographicSize, 1, 179);
-            m_MinOrthgraphicSize = Mathf.Clamp(m_MinOrthgraphicSize, 1, m_MaxOrthographicSize);
-        }
+            alphaKeys = new[] { new GradientAlphaKey(1, 0) },
+            colorKeys = new[]
+            {
+                new GradientColorKey(Color.white, 0),
+                new GradientColorKey(Color.black, 1),
+            },
+        };
 
-        class VcamExtraState
+        class VcamExtraState2D
         {
-            public float m_previousFrameZoom = 0;
+            public float m_previousFrameDistance = 0;
         }
 
         /// Report maximum damping time needed for this component.
         /// <returns>Highest damping setting in this component</returns>
         public override float GetMaxDampTime() => m_Damping;
 
-        /// Callback to preform the zoom adjustment
         override protected void PostPipelineStageCallback(
             CinemachineVirtualCameraBase vcam,
             CinemachineCore.Stage stage, ref CameraState state, float deltaTime)
         {
-            VcamExtraState extra = GetExtraState<VcamExtraState>(vcam);
+            VcamExtraState2D extra = GetExtraState<VcamExtraState2D>(vcam);
             if (deltaTime < 0 || !VirtualCamera.PreviousStateIsValid)
-                extra.m_previousFrameZoom = state.Lens.FieldOfView;
+                extra.m_previousFrameDistance = state.Lens.FieldOfView;
 
-            // Set the zoom after the body has been positioned, but before the aim,
-            // so that composer can compose using the updated fov.
             if (stage == CinemachineCore.Stage.Body)
             {
-                // Try to reproduce the target width
-                float targetWidth = Mathf.Max(m_Width, 0);
-                float fov = 179f;
-                float d = Vector3.Distance(state.CorrectedPosition, state.ReferenceLookAt);
-                if (d > UnityVectorExtensions.Epsilon)
+                LensSettings lens = state.Lens;
+                // From Documentation:
+                // The orthographicSize is half the size of the vertical viewing volume.
+                // The horizontal size of the viewing volume depends on the aspect ratio.
+
+                float distance = Vector2.Distance(state.CorrectedPosition, state.ReferenceLookAt);
+
+                Debug.DrawLine(state.CorrectedPosition, state.ReferenceLookAt);
+
+                if (distance > UnityVectorExtensions.Epsilon)
                 {
-                    // Clamp targetWidth to FOV min/max
-                    float minW = d * 2f * Mathf.Tan(m_MinOrthgraphicSize * Mathf.Deg2Rad / 2f);
-                    float maxW = d * 2f * Mathf.Tan(m_MaxOrthographicSize * Mathf.Deg2Rad / 2f);
-                    targetWidth = Mathf.Clamp(targetWidth, minW, maxW);
-
-                    // Apply damping
-                    if (deltaTime >= 0 && m_Damping > 0 && VirtualCamera.PreviousStateIsValid)
-                    {
-                        float currentWidth = d * 2f * Mathf.Tan(extra.m_previousFrameZoom * Mathf.Deg2Rad / 2f);
-                        float delta = targetWidth - currentWidth;
-                        delta = VirtualCamera.DetachedLookAtTargetDamp(delta, m_Damping, deltaTime);
-                        targetWidth = currentWidth + delta;
-                    }
-
-                    fov = 2f * Mathf.Atan(targetWidth / (2 * d)) * Mathf.Rad2Deg;
+                    distance = DampingIfNeed(deltaTime, distance, extra);
                 }
 
-                LensSettings lens = state.Lens;
-                lens.OrthographicSize = extra.m_previousFrameZoom =
-                    Mathf.Clamp(fov, m_MinOrthgraphicSize, m_MaxOrthographicSize);
+                extra.m_previousFrameDistance = distance;
+                lens.OrthographicSize += OrthographicSizeByDistance.Evaluate(distance);
 
                 state.Lens = lens;
             }
+        }
+
+        float DampingIfNeed(float deltaTime, float distance, VcamExtraState2D extra)
+        {
+            if (m_Damping <= 0) return distance;
+            if (!(deltaTime >= 0) || !VirtualCamera.PreviousStateIsValid) return distance;
+
+            float delta = distance - extra.m_previousFrameDistance;
+            delta = VirtualCamera.DetachedLookAtTargetDamp(delta, m_Damping, deltaTime);
+            return extra.m_previousFrameDistance + delta;
+        }
+
+        void OnDrawGizmosSelected()
+        {
+            #if UNITY_EDITOR
+            if (!m_Gizmo || OrthographicSizeByDistance.length == 0) return;
+
+            float length = OrthographicSizeByDistance.keys.Length;
+            for (int i = 0; i < length; i++)
+            {
+                Handles.matrix = Gizmos.matrix = transform.localToWorldMatrix;
+                Handles.color = Gizmos.color = m_GizmoColor.Evaluate(i / length + 1);
+
+                var key = OrthographicSizeByDistance.keys[i];
+                Handles.DrawWireDisc(default, Vector3.forward, key.time);
+                float size = VirtualCamera.State.Lens.OrthographicSize + key.value;
+                Gizmos.DrawWireCube(default, Vector2.one * size);
+            }
+            #endif
         }
     }
 }
