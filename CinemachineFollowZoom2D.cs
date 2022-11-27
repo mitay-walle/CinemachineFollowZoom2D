@@ -1,10 +1,16 @@
 using System;
 using UnityEngine;
-using Cinemachine.Utility;
 using UnityEditor;
 
 namespace Cinemachine
 {
+    public enum Zoom2DPattern
+    {
+        CameraTargetDistance,
+        CameraTargetVelocity,
+        TargetVelocity,
+    }
+
     /// An add-on module for Cinemachine Virtual Camera that adjusts
     /// the OrthographicSize of the lens to keep the target object at a constant size on the screen,
     /// regardless of camera and target position.
@@ -14,8 +20,10 @@ namespace Cinemachine
     [DisallowMultipleComponent]
     public class CinemachineFollowZoom2D : CinemachineExtension
     {
+        [SerializeField] Zoom2DPattern m_Pattern;
+
         [Tooltip("The shot height to maintain, in world units, at target distance.")]
-        [SerializeField] AnimationCurve OrthographicSizeByDistance = AnimationCurve.Linear(0, -1, 2, 2);
+        [SerializeField] AnimationCurve m_OrthographicSizeByDistance = AnimationCurve.Linear(0, -1, 2, 2);
 
         /// <summary>Increase this value to soften the aggressiveness of the follow-zoom.
         /// Small numbers are more responsive, larger numbers give a more heavy slowly responding camera. </summary>
@@ -25,6 +33,8 @@ namespace Cinemachine
         [SerializeField] float m_Damping = 1;
 
         [SerializeField] bool m_Gizmo = true;
+        float m_Distance = 1;
+        float m_Velocity = 1;
 
         [SerializeField] Gradient m_GizmoColor = new Gradient
         {
@@ -38,7 +48,9 @@ namespace Cinemachine
 
         class VcamExtraState2D
         {
+            public float m_previousFrameResult = 0;
             public float m_previousFrameDistance = 0;
+            public Vector2 m_previousFramePosition;
         }
 
         /// Report maximum damping time needed for this component.
@@ -50,8 +62,6 @@ namespace Cinemachine
             CinemachineCore.Stage stage, ref CameraState state, float deltaTime)
         {
             VcamExtraState2D extra = GetExtraState<VcamExtraState2D>(vcam);
-            if (deltaTime < 0 || !VirtualCamera.PreviousStateIsValid)
-                extra.m_previousFrameDistance = state.Lens.FieldOfView;
 
             if (stage == CinemachineCore.Stage.Body)
             {
@@ -60,44 +70,95 @@ namespace Cinemachine
                 // The orthographicSize is half the size of the vertical viewing volume.
                 // The horizontal size of the viewing volume depends on the aspect ratio.
 
-                float distance = Vector2.Distance(state.CorrectedPosition, state.ReferenceLookAt);
+                float result;
 
-                Debug.DrawLine(state.CorrectedPosition, state.ReferenceLookAt);
-
-                if (distance > UnityVectorExtensions.Epsilon)
+                switch (m_Pattern)
                 {
-                    distance = DampingIfNeed(deltaTime, distance, extra);
+                    case Zoom2DPattern.CameraTargetDistance:
+                    {
+                        result = m_Distance = Vector2.Distance(state.CorrectedPosition, state.ReferenceLookAt);
+                        extra.m_previousFrameDistance = result;
+                        break;
+                    }
+
+                    case Zoom2DPattern.CameraTargetVelocity:
+                    {
+                        float newDistance = Vector2.Distance(state.CorrectedPosition, state.ReferenceLookAt);
+                        result = m_Velocity = Mathf.Abs(newDistance - extra.m_previousFrameDistance);
+                        extra.m_previousFrameDistance = newDistance;
+                        break;
+                    }
+
+                    case Zoom2DPattern.TargetVelocity:
+                    {
+                        if (VirtualCamera.Follow)
+                        {
+                            var rb = VirtualCamera.Follow.GetComponent<Rigidbody2D>();
+                            if (rb)
+                            {
+                                result = m_Velocity = rb.velocity.magnitude;
+                            }
+                            else
+                            {
+                                float newDistance =
+                                    Vector2.Distance(state.ReferenceLookAt, extra.m_previousFramePosition);
+
+                                result = m_Velocity = Mathf.Abs(newDistance - extra.m_previousFrameDistance);
+                                extra.m_previousFrameDistance = newDistance;
+                                extra.m_previousFramePosition = state.ReferenceLookAt;
+                            }
+                        }
+                        else
+                        {
+                            result = default;
+                        }
+
+                        break;
+                    }
+
+                    default:
+                    {
+                        throw new ArgumentOutOfRangeException();
+                    }
                 }
 
-                extra.m_previousFrameDistance = distance;
-                lens.OrthographicSize += OrthographicSizeByDistance.Evaluate(distance);
+                //if (result > UnityVectorExtensions.Epsilon)
+                {
+                    result = ApplyDampingIfNeed(deltaTime, result, extra);
+                }
+
+                extra.m_previousFrameResult = result;
+
+                lens.OrthographicSize += m_OrthographicSizeByDistance.Evaluate(result);
 
                 state.Lens = lens;
             }
         }
 
-        float DampingIfNeed(float deltaTime, float distance, VcamExtraState2D extra)
+        float ApplyDampingIfNeed(float deltaTime, float distance, VcamExtraState2D extra)
         {
             if (m_Damping <= 0) return distance;
-            if (!(deltaTime >= 0) || !VirtualCamera.PreviousStateIsValid) return distance;
+            // if (!(deltaTime >= 0)
+            //     //|| !VirtualCamera.PreviousStateIsValid
+            //     ) return distance;
 
-            float delta = distance - extra.m_previousFrameDistance;
-            delta = VirtualCamera.DetachedLookAtTargetDamp(delta, m_Damping, deltaTime);
-            return extra.m_previousFrameDistance + delta;
+            float delta = distance - extra.m_previousFrameResult;
+            delta = VirtualCamera.DetachedFollowTargetDamp(delta, m_Damping, deltaTime);
+            return extra.m_previousFrameResult + delta;
         }
 
         void OnDrawGizmosSelected()
         {
             #if UNITY_EDITOR
-            if (!m_Gizmo || OrthographicSizeByDistance.length == 0) return;
+            if (!m_Gizmo || m_OrthographicSizeByDistance.length == 0) return;
 
-            float length = OrthographicSizeByDistance.keys.Length;
+            float length = m_OrthographicSizeByDistance.keys.Length;
             for (int i = 0; i < length; i++)
             {
                 Handles.matrix = Gizmos.matrix = transform.localToWorldMatrix;
                 Handles.color = Gizmos.color = m_GizmoColor.Evaluate(i / length + 1);
 
-                var key = OrthographicSizeByDistance.keys[i];
+                var key = m_OrthographicSizeByDistance.keys[i];
                 Handles.DrawWireDisc(default, Vector3.forward, key.time);
                 float size = VirtualCamera.State.Lens.OrthographicSize + key.value;
                 Gizmos.DrawWireCube(default, Vector2.one * size);
